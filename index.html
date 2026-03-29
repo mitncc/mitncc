@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tarang — Digital Magazine</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+  <!-- ░░ TOP BAR ░░ -->
+  <header id="topbar">
+    <div class="topbar-inner">
+
+      <div class="topbar-left">
+        <span class="brand-title">Tarang</span>
+        <span class="brand-divider">—</span>
+        <span class="brand-sub">Digital Edition</span>
+      </div>
+
+      <div class="topbar-center">
+        <span id="page-label">Page <span id="current-page">1</span> / <span id="total-pages">73</span></span>
+      </div>
+
+      <div class="topbar-right">
+        <button id="btn-prev" class="nav-btn" title="Previous page (←)">&#8592;</button>
+        <button id="btn-next" class="nav-btn" title="Next page (→)">&#8594;</button>
+      </div>
+
+    </div>
+
+    <!-- Scroll progress bar -->
+    <div id="progress-bar"></div>
+  </header>
+
+  <!-- ░░ MAGAZINE PAGES ░░ -->
+  <main id="magazine">
+    <!-- Pages injected by script.js -->
+  </main>
+
+  <!-- ░░ FOOTER ░░ -->
+  <footer id="footer">
+    <span>Tarang &mdash; All rights reserved</span>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
