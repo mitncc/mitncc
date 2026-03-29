@@ -1,341 +1,304 @@
 /**
- * TARANG — Digital Magazine Viewer
+ * TARANG — Page-Flip Magazine Viewer
  * script.js
  *
- * DESKTOP : scrollable page-by-page view, keyboard nav, IntersectionObserver
- * MOBILE  : fullscreen single-page viewer, swipe left/right, tap zones, sound
+ * Architecture:
+ *   - The "book" shows two static pages (left + right) at all times.
+ *   - A "flipper" div sits on top, containing front/back faces.
+ *   - When turning, we:
+ *       1. Pre-load images into flipper faces BEFORE animation starts
+ *       2. Animate immediately (zero delay)
+ *       3. On animation end, update static pages and reset flipper
+ *
+ * Desktop: double-page spread (pages 1+2, 3+4, …)
+ * Mobile:  single page at a time
+ *
+ * Page numbering: 1-based. Files: pages/1.png … pages/85.png
  */
 
 (() => {
   'use strict';
 
-  /* ─────────────────────────────────────────
-     CONFIG
-  ───────────────────────────────────────── */
-  const CONFIG = {
-    pagesDir:    'pages/',   // folder with images
-    totalPages:  85,         // 1.png … 85.png
-    isMobile:    () => window.innerWidth < 768,
-  };
+  /* ── CONFIG ── */
+  const TOTAL     = 85;
+  const DIR       = 'pages/';
+  const FLIP_MS   = 450;          // must match CSS --flip-dur
+  const IS_MOBILE = () => window.innerWidth <= 700;
 
-  /* ─────────────────────────────────────────
-     BUILD FILE LIST  →  ["pages/1.png", "pages/2.png", …]
-  ───────────────────────────────────────── */
-  function buildFileList() {
-    const files = [];
-    for (let i = 1; i <= CONFIG.totalPages; i++) {
-      files.push(`${CONFIG.pagesDir}${i}.png`);
-    }
-    return files;
+  /* ── PRELOAD CACHE ── */
+  // Preload N pages ahead so flips feel instant
+  const PRELOAD_AHEAD = 4;
+  const cache = {};   // src → Image object
+
+  function preload(pageNum) {
+    if (pageNum < 1 || pageNum > TOTAL) return;
+    const src = `${DIR}${pageNum}.png`;
+    if (cache[src]) return;
+    const img = new Image();
+    img.src = src;
+    cache[src] = img;
   }
 
-  const FILES = buildFileList();
-  const TOTAL = FILES.length;
+  function src(n) {
+    return (n >= 1 && n <= TOTAL) ? `${DIR}${n}.png` : '';
+  }
 
-  /* ─────────────────────────────────────────
-     DOM REFS
-  ───────────────────────────────────────── */
-  // Desktop
-  const magazine      = document.getElementById('magazine');
-  const currentPageEl = document.getElementById('current-page');
-  const totalPagesEl  = document.getElementById('total-pages');
-  const progressBar   = document.getElementById('progress-bar');
-  const btnPrev       = document.getElementById('btn-prev');
-  const btnNext       = document.getElementById('btn-next');
+  /* ── STATE ── */
+  // On desktop, spread = which LEFT page is showing (always odd if 1-indexed from left, but we use spread index)
+  // spreadBase: the left page number of the current spread.
+  // Desktop spreads: [1,2], [3,4], [5,6] … so spreadBase = 1, 3, 5, …
+  // Mobile: single page, spreadBase = current page number
+  let spreadBase   = 1;     // left page of current spread (or current page on mobile)
+  let isAnimating  = false;
 
-  // Mobile
-  const mobileViewer  = document.getElementById('mobile-viewer');
-  const mobileImg     = document.getElementById('mobile-img');
-  const mCurrentEl    = document.getElementById('m-current');
-  const mTotalEl      = document.getElementById('m-total');
-  const tapPrev       = document.getElementById('tap-prev');
-  const tapNext       = document.getElementById('tap-next');
+  /* ── DOM ── */
+  const book         = document.getElementById('book');
+  const leftPage     = document.getElementById('left-page');
+  const rightPage    = document.getElementById('right-page');
+  const leftImg      = document.getElementById('left-img');
+  const rightImg     = document.getElementById('right-img');
+  const flipper      = document.getElementById('flipper');
+  const flipFrontImg = document.getElementById('flip-front-img');
+  const flipBackImg  = document.getElementById('flip-back-img');
+  const curPageEl    = document.getElementById('cur-page');
+  const totPageEl    = document.getElementById('tot-page');
+  const progEl       = document.getElementById('prog');
+  const btnPrev      = document.getElementById('btn-prev');
+  const btnNext      = document.getElementById('btn-next');
+  const arrPrev      = document.getElementById('arr-prev');
+  const arrNext      = document.getElementById('arr-next');
+  const snd          = document.getElementById('snd');
 
-  // Sound
-  const sound         = document.getElementById('page-turn-sound');
+  /* ── SIZE THE BOOK to fit viewport ── */
+  function sizeBook() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const tbH = document.getElementById('topbar').offsetHeight;
+    const availH = vh - tbH - (IS_MOBILE() ? 32 : 48);
+    const availW = vw - (IS_MOBILE() ? 96 : 120);
 
-  /* ─────────────────────────────────────────
-     SHARED STATE
-  ───────────────────────────────────────── */
-  let currentPage = 1;          // 1-based, shared between both modes
-  const pageElements = [];      // desktop .page-wrapper divs
+    // Each page has a natural portrait ratio ~0.72 (w/h). Adjust if yours differ.
+    const PAGE_RATIO = 0.72;
 
-  /* ─────────────────────────────────────────
-     SOUND — play page-turn mp3
-     (must be triggered by user gesture on iOS)
-  ───────────────────────────────────────── */
-  function playTurnSound() {
-    if (!sound) return;
+    if (IS_MOBILE()) {
+      // Single page
+      let pw = availW;
+      let ph = pw / PAGE_RATIO;
+      if (ph > availH) { ph = availH; pw = ph * PAGE_RATIO; }
+      book.style.width  = pw + 'px';
+      book.style.height = ph + 'px';
+    } else {
+      // Double page spread
+      let bw = availW;
+      let bh = bw / 2 / PAGE_RATIO;  // half the book width per page
+      if (bh > availH) { bh = availH; bw = bh * PAGE_RATIO * 2; }
+      book.style.width  = bw + 'px';
+      book.style.height = bh + 'px';
+    }
+  }
+
+  /* ── COUNTER + PROGRESS ── */
+  function updateUI() {
+    const displayPage = IS_MOBILE() ? spreadBase : spreadBase;
+    curPageEl.textContent = displayPage;
+    const pct = ((displayPage - 1) / (TOTAL - 1)) * 100;
+    progEl.style.width = Math.min(100, pct).toFixed(1) + '%';
+
+    const atStart = spreadBase <= 1;
+    const atEnd   = IS_MOBILE() ? spreadBase >= TOTAL : spreadBase + 1 >= TOTAL;
+    btnPrev.disabled = atStart;
+    arrPrev.disabled = atStart;
+    btnNext.disabled = atEnd;
+    arrNext.disabled = atEnd;
+  }
+
+  /* ── RENDER static pages (no animation) ── */
+  function renderStatic(base) {
+    if (IS_MOBILE()) {
+      leftImg.src = src(base);
+      rightImg.src = '';
+    } else {
+      leftImg.src  = src(base);
+      rightImg.src = src(base + 1);
+    }
+  }
+
+  /* ── PLAY SOUND ── */
+  function playSound() {
+    if (!snd) return;
     try {
-      sound.currentTime = 0;
-      const p = sound.play();
-      if (p && p.catch) p.catch(() => {}); // silence NotAllowedError
+      snd.currentTime = 0;
+      const p = snd.play();
+      if (p && p.catch) p.catch(() => {});
     } catch (_) {}
   }
 
-  /* ─────────────────────────────────────────
-     ══════════════════════════════════════
-         DESKTOP MODE
-     ══════════════════════════════════════
-  ───────────────────────────────────────── */
+  /* ── FLIP ANIMATION ──────────────────────────────────────────────────
+   *
+   * FORWARD (next): right half of book folds back → reveals next spread
+   *   - flipper positioned on the RIGHT half
+   *   - front face = current right page (what's showing)
+   *   - back  face = next left page (what will be revealed)
+   *   - book's right static page switches to next right page instantly
+   *   - animates: rotateY(0) → rotateY(-180deg)
+   *
+   * BACKWARD (prev): left half of book folds back → reveals prev spread
+   *   - flipper positioned on the LEFT half
+   *   - front face (seen from back) = current left page
+   *   - back  face = prev right page
+   *   - book's left static page switches to prev left page instantly
+   *   - animates: rotateY(-180deg) → rotateY(0)
+   *
+   * Mobile: same but only one page, flipper = full width
+   * ────────────────────────────────────────────────────────────────── */
 
-  function initDesktop() {
-    totalPagesEl.textContent = TOTAL;
-    btnPrev.disabled = true;
+  function flip(direction) {
+    if (isAnimating) return;
 
-    // Render all page wrappers
-    const frag = document.createDocumentFragment();
-    FILES.forEach((src, idx) => {
-      const pageNum = idx + 1;
-      const wrapper = document.createElement('div');
-      wrapper.className = 'page-wrapper';
-      wrapper.dataset.page = pageNum;
+    const mobile = IS_MOBILE();
+    const step   = mobile ? 1 : 2;
 
-      const img = document.createElement('img');
-      img.className = 'page-img';
-      img.alt       = `Tarang — Page ${pageNum}`;
-      img.loading   = 'lazy';
-      img.decoding  = 'async';
-      img.src       = src;
-      img.addEventListener('load',  () => wrapper.classList.add('loaded'));
-      img.addEventListener('error', () => {
-        wrapper.classList.add('loaded');
-        img.style.display = 'none';
-        const note = document.createElement('div');
-        note.style.cssText = 'text-align:center;padding:20px;color:#444;font-size:11px;';
-        note.textContent = `Page ${pageNum} not found`;
-        wrapper.appendChild(note);
-      });
+    // Compute next spreadBase
+    let nextBase;
+    if (direction === 'forward') {
+      nextBase = spreadBase + step;
+      if (nextBase > TOTAL) return;
+    } else {
+      nextBase = spreadBase - step;
+      if (nextBase < 1) return;
+    }
 
-      const badge = document.createElement('span');
-      badge.className   = 'page-number';
-      badge.textContent = pageNum;
+    isAnimating = true;
+    playSound();
 
-      wrapper.appendChild(img);
-      wrapper.appendChild(badge);
-      frag.appendChild(wrapper);
-      pageElements.push(wrapper);
-    });
-    magazine.appendChild(frag);
+    // ── Set up flipper faces ──
+    if (mobile) {
+      // Full width flipper
+      flipper.style.left  = '0';
+      flipper.style.right = '0';
+      flipper.style.width = '100%';
+      if (direction === 'forward') {
+        flipper.style.transformOrigin = 'left center';
+        flipFrontImg.src = src(spreadBase);       // current page
+        flipBackImg.src  = src(nextBase);         // next page
+        // Under the flipper: show next page on left static immediately
+        leftImg.src = src(nextBase);
+        flipper.style.transform = 'rotateY(0deg)';
+      } else {
+        flipper.style.transformOrigin = 'right center';
+        flipFrontImg.src = src(nextBase);         // prev page (shown as back)
+        flipBackImg.src  = src(spreadBase);       // current page (front = back face)
+        leftImg.src = src(nextBase);
+        flipper.style.transform = 'rotateY(-180deg)';
+      }
+    } else {
+      // Desktop double spread
+      if (direction === 'forward') {
+        // Flipper on right half
+        flipper.style.left  = '50%';
+        flipper.style.right = '0';
+        flipper.style.width = '50%';
+        flipper.style.transformOrigin = 'left center';
+        flipFrontImg.src = src(spreadBase + 1);   // current right page
+        flipBackImg.src  = src(nextBase);         // next left page
+        // Swap right static to next right page (hidden under flipper initially, reveals at end)
+        rightImg.src = src(nextBase + 1);
+        flipper.style.transform = 'rotateY(0deg)';
+      } else {
+        // Flipper on left half
+        flipper.style.left  = '0';
+        flipper.style.right = '50%';
+        flipper.style.width = '50%';
+        flipper.style.transformOrigin = 'right center';
+        flipFrontImg.src = src(nextBase + 1);     // prev right page (shown as back)
+        flipBackImg.src  = src(spreadBase);       // current left page
+        leftImg.src = src(nextBase);
+        flipper.style.transform = 'rotateY(-180deg)';
+      }
+    }
 
-    // Observers
-    initDesktopObserver();
-    initRevealObserver();
+    // Force reflow so transform is applied before animation starts
+    void flipper.offsetWidth;
 
-    // Keyboard
-    document.addEventListener('keydown', onKeyDown);
+    // ── Trigger CSS animation ──
+    flipper.classList.add(direction === 'forward' ? 'flip-forward' : 'flip-backward');
+
+    // ── On animation end ──
+    flipper.addEventListener('animationend', function done() {
+      flipper.removeEventListener('animationend', done);
+      flipper.classList.remove('flip-forward', 'flip-backward');
+
+      // Commit new state
+      spreadBase = nextBase;
+      renderStatic(spreadBase);
+
+      // Hide flipper (push off screen)
+      flipper.style.transform = 'rotateY(90deg)'; // invisible, won't show
+      // Actually just move it out of sight
+      flipper.style.left = '-200%';
+
+      updateUI();
+      isAnimating = false;
+
+      // Preload upcoming pages
+      preloadAhead();
+    }, { once: true });
+  }
+
+  function preloadAhead() {
+    const mobile = IS_MOBILE();
+    const step = mobile ? 1 : 2;
+    for (let i = 1; i <= PRELOAD_AHEAD; i++) {
+      preload(spreadBase + i * step);
+      preload(spreadBase - i * step);
+    }
+  }
+
+  /* ── INITIAL RENDER ── */
+  function init() {
+    totPageEl.textContent = TOTAL;
+    sizeBook();
+    renderStatic(spreadBase);
+    updateUI();
+    preloadAhead();
+
+    // Hide flipper initially
+    flipper.style.left = '-200%';
 
     // Buttons
-    btnPrev.addEventListener('click', () => desktopScrollTo(currentPage - 1));
-    btnNext.addEventListener('click', () => desktopScrollTo(currentPage + 1));
-  }
+    btnNext.addEventListener('click', () => flip('forward'));
+    btnPrev.addEventListener('click', () => flip('backward'));
+    arrNext.addEventListener('click', () => flip('forward'));
+    arrPrev.addEventListener('click', () => flip('backward'));
 
-  function updateDesktopCounter(pageNum) {
-    if (pageNum === currentPage && currentPageEl.textContent === String(pageNum)) return;
-    currentPage = pageNum;
-    currentPageEl.textContent = pageNum;
-    const pct = ((pageNum - 1) / (TOTAL - 1)) * 100;
-    progressBar.style.width = pct.toFixed(2) + '%';
-    btnPrev.disabled = pageNum <= 1;
-    btnNext.disabled = pageNum >= TOTAL;
-  }
+    // Keyboard
+    document.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); flip('forward'); }
+      if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp'  ) { e.preventDefault(); flip('backward'); }
+    });
 
-  function initDesktopObserver() {
-    const thresholds = Array.from({ length: 21 }, (_, i) => i / 20);
-    const obs = new IntersectionObserver(entries => {
-      let maxRatio = 0, maxPage = currentPage;
-      entries.forEach(e => {
-        if (e.intersectionRatio > maxRatio) {
-          maxRatio = e.intersectionRatio;
-          maxPage  = parseInt(e.target.dataset.page, 10);
-        }
-      });
-      if (maxRatio > 0) updateDesktopCounter(maxPage);
-    }, { threshold: thresholds });
-
-    pageElements.forEach(el => obs.observe(el));
-  }
-
-  function initRevealObserver() {
-    const obs = new IntersectionObserver(entries => {
-      entries.forEach(e => {
-        if (e.isIntersecting) {
-          e.target.classList.add('visible');
-          obs.unobserve(e.target);
-        }
-      });
-    }, { rootMargin: '0px 0px -60px 0px', threshold: 0.05 });
-
-    pageElements.forEach(el => obs.observe(el));
-  }
-
-  function desktopScrollTo(pageNum) {
-    const idx = Math.max(0, Math.min(pageNum - 1, pageElements.length - 1));
-    const target = pageElements[idx];
-    if (!target) return;
-    const topbarH = document.getElementById('topbar').offsetHeight;
-    const top = target.getBoundingClientRect().top + window.scrollY - topbarH - 12;
-    window.scrollTo({ top, behavior: 'smooth' });
-  }
-
-  function onKeyDown(e) {
-    if (!CONFIG.isMobile()) {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-        e.preventDefault(); desktopScrollTo(currentPage + 1);
-      } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-        e.preventDefault(); desktopScrollTo(currentPage - 1);
-      } else if (e.key === 'Home') {
-        e.preventDefault(); desktopScrollTo(1);
-      } else if (e.key === 'End') {
-        e.preventDefault(); desktopScrollTo(TOTAL);
-      }
-    }
-  }
-
-
-  /* ─────────────────────────────────────────
-     ══════════════════════════════════════
-         MOBILE FULLSCREEN MODE
-     ══════════════════════════════════════
-  ───────────────────────────────────────── */
-
-  let mobileInTransition = false;
-
-  function initMobile() {
-    mTotalEl.textContent = TOTAL;
-    showMobilePage(currentPage, 'none');
-
-    // Tap zones
-    tapPrev.addEventListener('click', () => mobileGo(currentPage - 1, 'right'));
-    tapNext.addEventListener('click', () => mobileGo(currentPage + 1, 'left'));
-
-    // Swipe detection
-    initSwipe();
-  }
-
-  /**
-   * Show a page on mobile.
-   * direction: 'left' | 'right' | 'none'
-   *   'left'  = swiping left  → next page (image exits left, new comes from right)
-   *   'right' = swiping right → prev page (image exits right, new comes from left)
-   */
-  function showMobilePage(pageNum, direction) {
-    if (mobileInTransition) return;
-    pageNum = Math.max(1, Math.min(pageNum, TOTAL));
-    if (pageNum === currentPage && mobileImg.src.endsWith(`${pageNum}.png`)) return;
-
-    mobileInTransition = true;
-
-    const src = FILES[pageNum - 1];
-
-    if (direction === 'none') {
-      // Initial load — no animation
-      mobileImg.src = src;
-      currentPage = pageNum;
-      updateMobileCounter(pageNum);
-      mobileInTransition = false;
-      return;
-    }
-
-    // Animate out
-    const outClass = direction === 'left' ? 'flip-out-left' : 'flip-out-right';
-    mobileImg.classList.add(outClass);
-
-    setTimeout(() => {
-      // Swap image
-      mobileImg.classList.remove(outClass);
-      mobileImg.classList.add('flip-in');
-      mobileImg.src = src;
-
-      // Play sound
-      playTurnSound();
-
-      // Update state
-      currentPage = pageNum;
-      updateMobileCounter(pageNum);
-
-      // Fade in
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          mobileImg.classList.remove('flip-in');
-          mobileInTransition = false;
-        });
-      });
-    }, 180); // matches CSS transition duration
-  }
-
-  function mobileGo(pageNum, direction) {
-    pageNum = Math.max(1, Math.min(pageNum, TOTAL));
-    if (pageNum === currentPage) return;
-    showMobilePage(pageNum, direction);
-  }
-
-  function updateMobileCounter(pageNum) {
-    mCurrentEl.textContent = pageNum;
-  }
-
-  /* ── Swipe detection ── */
-  function initSwipe() {
-    let touchStartX = 0;
-    let touchStartY = 0;
-    let touchStartTime = 0;
-    const SWIPE_THRESHOLD  = 40;   // min px horizontal to count as swipe
-    const ANGLE_THRESHOLD  = 40;   // max degrees from horizontal
-
-    mobileViewer.addEventListener('touchstart', e => {
-      const t = e.touches[0];
-      touchStartX    = t.clientX;
-      touchStartY    = t.clientY;
-      touchStartTime = Date.now();
+    // Touch / swipe
+    let tx0 = 0, ty0 = 0, t0 = 0;
+    document.addEventListener('touchstart', e => {
+      tx0 = e.touches[0].clientX;
+      ty0 = e.touches[0].clientY;
+      t0  = Date.now();
+    }, { passive: true });
+    document.addEventListener('touchend', e => {
+      const dx = e.changedTouches[0].clientX - tx0;
+      const dy = e.changedTouches[0].clientY - ty0;
+      const dt = Date.now() - t0;
+      if (dt > 500 || Math.abs(dx) < 35) return;
+      if (Math.abs(dy) > Math.abs(dx) * 1.2) return;
+      if (dx < 0) flip('forward');
+      else        flip('backward');
     }, { passive: true });
 
-    mobileViewer.addEventListener('touchend', e => {
-      const t = e.changedTouches[0];
-      const dx = t.clientX - touchStartX;
-      const dy = t.clientY - touchStartY;
-      const dt = Date.now() - touchStartTime;
-
-      // Ignore long-press, near-vertical swipes
-      if (dt > 600) return;
-      if (Math.abs(dx) < SWIPE_THRESHOLD) return;
-      const angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
-      if (angle > ANGLE_THRESHOLD && angle < (180 - ANGLE_THRESHOLD)) return;
-
-      if (dx < 0) {
-        // Swipe left → next page
-        mobileGo(currentPage + 1, 'left');
-      } else {
-        // Swipe right → prev page
-        mobileGo(currentPage - 1, 'right');
-      }
-    }, { passive: true });
-  }
-
-
-  /* ─────────────────────────────────────────
-     INIT — decide mode and boot
-  ───────────────────────────────────────── */
-  function init() {
-    // Always init desktop DOM (even on mobile breakpoint,
-    // in case user rotates to landscape / resizes)
-    if (!CONFIG.isMobile()) {
-      initDesktop();
-    }
-
-    // Mobile viewer is always initialised — CSS hides/shows the correct one
-    initMobile();
-
-    // If window resizes across the breakpoint, reload to re-init cleanly
-    let wasAlreadyMobile = CONFIG.isMobile();
+    // Resize
     window.addEventListener('resize', () => {
-      const isMobileNow = CONFIG.isMobile();
-      if (isMobileNow !== wasAlreadyMobile) {
-        wasAlreadyMobile = isMobileNow;
-        // Re-init the newly visible mode if needed
-        if (!isMobileNow && pageElements.length === 0) {
-          initDesktop();
-        }
-      }
+      sizeBook();
+      renderStatic(spreadBase);
+      updateUI();
     });
   }
 
