@@ -74,24 +74,23 @@
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const tbH = document.getElementById('topbar').offsetHeight;
-    const availH = vh - tbH - (IS_MOBILE() ? 32 : 48);
-    const availW = vw - (IS_MOBILE() ? 96 : 120);
+    const availH = vh - tbH;
 
     // Each page has a natural portrait ratio ~0.72 (w/h). Adjust if yours differ.
     const PAGE_RATIO = 0.72;
 
     if (IS_MOBILE()) {
-      // Single page
-      let pw = availW;
-      let ph = pw / PAGE_RATIO;
-      if (ph > availH) { ph = availH; pw = ph * PAGE_RATIO; }
+      // Full bleed — fill 100% width and all remaining height
+      const pw = vw;
+      const ph = availH;
       book.style.width  = pw + 'px';
       book.style.height = ph + 'px';
     } else {
-      // Double page spread
+      // Desktop: constrained with padding for arrow buttons
+      const availW = vw - 120;
       let bw = availW;
-      let bh = bw / 2 / PAGE_RATIO;  // half the book width per page
-      if (bh > availH) { bh = availH; bw = bh * PAGE_RATIO * 2; }
+      let bh = bw / 2 / PAGE_RATIO;
+      if (bh > availH - 48) { bh = availH - 48; bw = bh * PAGE_RATIO * 2; }
       book.style.width  = bw + 'px';
       book.style.height = bh + 'px';
     }
@@ -123,10 +122,22 @@
     }
   }
 
-  /* ── PLAY SOUND ── */
+  /* ── SOUND ── */
+  let muted = false;   // module-scoped — no window indirection needed
+
+  // iOS / Chrome require audio to be "unlocked" by a user gesture.
+  // We silently play+pause on first touchstart to unlock the audio context.
+  let audioUnlocked = false;
+  function unlockAudio() {
+    if (audioUnlocked || !snd) return;
+    audioUnlocked = true;
+    snd.play().then(() => { snd.pause(); snd.currentTime = 0; }).catch(() => {});
+  }
+  document.addEventListener('touchstart', unlockAudio, { once: true, passive: true });
+  document.addEventListener('mousedown',  unlockAudio, { once: true });
+
   function playSound() {
-    if (!snd) return;
-    if (window.__tarangMuted && window.__tarangMuted()) return;
+    if (!snd || muted) return;
     try {
       snd.currentTime = 0;
       const p = snd.play();
@@ -267,22 +278,18 @@
     flipper.style.left = '-200%';
 
     // Mute toggle
-    const btnMute    = document.getElementById('btn-mute');
-    const iconSound  = document.getElementById('icon-sound');
-    const iconMuted  = document.getElementById('icon-muted');
-    let muted = false;
+    const btnMute   = document.getElementById('btn-mute');
+    const iconSound = document.getElementById('icon-sound');
+    const iconMuted = document.getElementById('icon-muted');
 
     btnMute.addEventListener('click', () => {
       muted = !muted;
       btnMute.classList.toggle('muted', muted);
-      btnMute.title       = muted ? 'Unmute sound' : 'Mute sound';
-      btnMute.ariaLabel   = muted ? 'Unmute sound' : 'Mute sound';
+      btnMute.title     = muted ? 'Unmute sound' : 'Mute sound';
+      btnMute.ariaLabel = muted ? 'Unmute sound' : 'Mute sound';
       iconSound.style.display = muted ? 'none'  : 'block';
       iconMuted.style.display = muted ? 'block' : 'none';
     });
-
-    // Expose muted flag to playSound
-    window.__tarangMuted = () => muted;
 
     // Buttons
     btnNext.addEventListener('click', () => flip('forward'));

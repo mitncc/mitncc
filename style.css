@@ -260,17 +260,25 @@ body {
 @media (max-width: 700px) {
   :root { --tb-h: 46px; }
 
-  #viewer { padding: 16px 48px; }
+  /* Zero padding — book fills entire viewer */
+  #viewer { padding: 0; }
 
   /* Hide right static page */
   #right-page { display: none; }
-  /* Left page fills the whole book */
-  .static-page { flex: 1 1 100%; border-radius: var(--radius); }
 
-  /* Flipper also full width on mobile */
-  .arr { width: 36px; height: 36px; font-size: 14px; }
-  #arr-prev { left: 4px; }
-  #arr-next { right: 4px; }
+  /* Left page = full book */
+  .static-page { flex: 1 1 100%; border-radius: 0; }
+
+  /* Arrow buttons float as slim side strips over the book */
+  .arr {
+    width: 38px; height: 64px;
+    border-radius: 3px;
+    background: rgba(0,0,0,0.25);
+    border: none;
+    font-size: 15px;
+  }
+  #arr-prev { left: 0; border-radius: 0 4px 4px 0; }
+  #arr-next { right: 0; border-radius: 4px 0 0 4px; }
 
   .tb-title { font-size: 17px; }
   .tb-logo  { width: 22px; height: 22px; }
