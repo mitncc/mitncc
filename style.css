@@ -84,6 +84,22 @@ body {
 .nb:hover  { color:var(--accent); border-color:var(--accent-d); }
 .nb:disabled { opacity:.2; cursor:default; }
 
+/* SVG icons inside mute button */
+.mute-btn svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+  pointer-events: none;
+}
+
+/* Muted state: icon turns accent-dim, slight strikethrough feel */
+.mute-btn.muted {
+  color: var(--accent-d);
+  border-color: var(--accent-d);
+}
+
+.nb.muted { color: var(--muted); }
+
 #prog {
   position: absolute;
   bottom: 0; left: 0;

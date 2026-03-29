@@ -126,6 +126,7 @@
   /* ── PLAY SOUND ── */
   function playSound() {
     if (!snd) return;
+    if (window.__tarangMuted && window.__tarangMuted()) return;
     try {
       snd.currentTime = 0;
       const p = snd.play();
@@ -264,6 +265,24 @@
 
     // Hide flipper initially
     flipper.style.left = '-200%';
+
+    // Mute toggle
+    const btnMute    = document.getElementById('btn-mute');
+    const iconSound  = document.getElementById('icon-sound');
+    const iconMuted  = document.getElementById('icon-muted');
+    let muted = false;
+
+    btnMute.addEventListener('click', () => {
+      muted = !muted;
+      btnMute.classList.toggle('muted', muted);
+      btnMute.title       = muted ? 'Unmute sound' : 'Mute sound';
+      btnMute.ariaLabel   = muted ? 'Unmute sound' : 'Mute sound';
+      iconSound.style.display = muted ? 'none'  : 'block';
+      iconMuted.style.display = muted ? 'block' : 'none';
+    });
+
+    // Expose muted flag to playSound
+    window.__tarangMuted = () => muted;
 
     // Buttons
     btnNext.addEventListener('click', () => flip('forward'));
