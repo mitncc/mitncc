@@ -2,61 +2,41 @@
  * TARANG — Page-Flip Magazine Viewer
  * script.js
  *
- * Architecture:
- *   - The "book" shows two static pages (left + right) at all times.
- *   - A "flipper" div sits on top, containing front/back faces.
- *   - When turning, we:
- *       1. Pre-load images into flipper faces BEFORE animation starts
- *       2. Animate immediately (zero delay)
- *       3. On animation end, update static pages and reset flipper
- *
- * Desktop: double-page spread (pages 1+2, 3+4, …)
- * Mobile:  single page at a time
- *
- * Page numbering: 1-based. Files: pages/1.png … pages/85.png
+ * Single page on ALL screen sizes.
+ * Book fills 100% of viewport width × (viewport height − topbar).
+ * CSS 3D flip animation, zero lag, swipe + keyboard + button nav.
  */
 
 (() => {
   'use strict';
 
   /* ── CONFIG ── */
-  const TOTAL     = 85;
-  const DIR       = 'pages/';
-  const FLIP_MS   = 450;          // must match CSS --flip-dur
-  const IS_MOBILE = () => window.innerWidth <= 700;
+  const TOTAL          = 85;
+  const DIR            = 'pages/';
+  const PRELOAD_AHEAD  = 4;
 
   /* ── PRELOAD CACHE ── */
-  // Preload N pages ahead so flips feel instant
-  const PRELOAD_AHEAD = 4;
-  const cache = {};   // src → Image object
-
-  function preload(pageNum) {
-    if (pageNum < 1 || pageNum > TOTAL) return;
-    const src = `${DIR}${pageNum}.png`;
-    if (cache[src]) return;
+  const cache = {};
+  function preload(n) {
+    if (n < 1 || n > TOTAL) return;
+    const s = `${DIR}${n}.png`;
+    if (cache[s]) return;
     const img = new Image();
-    img.src = src;
-    cache[src] = img;
+    img.src = s;
+    cache[s] = img;
   }
-
   function src(n) {
     return (n >= 1 && n <= TOTAL) ? `${DIR}${n}.png` : '';
   }
 
   /* ── STATE ── */
-  // On desktop, spread = which LEFT page is showing (always odd if 1-indexed from left, but we use spread index)
-  // spreadBase: the left page number of the current spread.
-  // Desktop spreads: [1,2], [3,4], [5,6] … so spreadBase = 1, 3, 5, …
-  // Mobile: single page, spreadBase = current page number
-  let spreadBase   = 1;     // left page of current spread (or current page on mobile)
-  let isAnimating  = false;
+  let page        = 1;      // current page (1-based)
+  let isAnimating = false;
 
   /* ── DOM ── */
+  const topbar       = document.getElementById('topbar');
   const book         = document.getElementById('book');
-  const leftPage     = document.getElementById('left-page');
-  const rightPage    = document.getElementById('right-page');
   const leftImg      = document.getElementById('left-img');
-  const rightImg     = document.getElementById('right-img');
   const flipper      = document.getElementById('flipper');
   const flipFrontImg = document.getElementById('flip-front-img');
   const flipBackImg  = document.getElementById('flip-back-img');
@@ -69,215 +49,122 @@
   const arrNext      = document.getElementById('arr-next');
   const snd          = document.getElementById('snd');
 
-  /* ── SIZE THE BOOK to fit viewport ── */
+  /* ── SIZE: book = full width × full remaining height ── */
   function sizeBook() {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const tbH = document.getElementById('topbar').offsetHeight;
-    const availH = vh - tbH;
-
-    // Each page has a natural portrait ratio ~0.72 (w/h). Adjust if yours differ.
-    const PAGE_RATIO = 0.72;
-
-    if (IS_MOBILE()) {
-      // Full bleed — fill 100% width and all remaining height
-      const pw = vw;
-      const ph = availH;
-      book.style.width  = pw + 'px';
-      book.style.height = ph + 'px';
-    } else {
-      // Desktop: constrained with padding for arrow buttons
-      const availW = vw - 120;
-      let bw = availW;
-      let bh = bw / 2 / PAGE_RATIO;
-      if (bh > availH - 48) { bh = availH - 48; bw = bh * PAGE_RATIO * 2; }
-      book.style.width  = bw + 'px';
-      book.style.height = bh + 'px';
-    }
+    const w = window.innerWidth;
+    const h = window.innerHeight - topbar.offsetHeight;
+    book.style.width  = w + 'px';
+    book.style.height = h + 'px';
+    // Flipper always matches book size (reset to hidden)
+    flipper.style.width  = w + 'px';
+    flipper.style.height = h + 'px';
   }
 
-  /* ── COUNTER + PROGRESS ── */
+  /* ── UI: counter + progress + button states ── */
   function updateUI() {
-    const displayPage = IS_MOBILE() ? spreadBase : spreadBase;
-    curPageEl.textContent = displayPage;
-    const pct = ((displayPage - 1) / (TOTAL - 1)) * 100;
-    progEl.style.width = Math.min(100, pct).toFixed(1) + '%';
-
-    const atStart = spreadBase <= 1;
-    const atEnd   = IS_MOBILE() ? spreadBase >= TOTAL : spreadBase + 1 >= TOTAL;
-    btnPrev.disabled = atStart;
-    arrPrev.disabled = atStart;
-    btnNext.disabled = atEnd;
-    arrNext.disabled = atEnd;
+    curPageEl.textContent = page;
+    progEl.style.width = (((page - 1) / (TOTAL - 1)) * 100).toFixed(1) + '%';
+    btnPrev.disabled = arrPrev.disabled = (page <= 1);
+    btnNext.disabled = arrNext.disabled = (page >= TOTAL);
   }
 
-  /* ── RENDER static pages (no animation) ── */
-  function renderStatic(base) {
-    if (IS_MOBILE()) {
-      leftImg.src = src(base);
-      rightImg.src = '';
-    } else {
-      leftImg.src  = src(base);
-      rightImg.src = src(base + 1);
-    }
+  /* ── RENDER: show current page with no animation ── */
+  function renderStatic() {
+    leftImg.src = src(page);
   }
 
   /* ── SOUND ── */
-  let muted = false;   // module-scoped — no window indirection needed
-
-  // iOS / Chrome require audio to be "unlocked" by a user gesture.
-  // We silently play+pause on first touchstart to unlock the audio context.
+  let muted = false;
   let audioUnlocked = false;
+
   function unlockAudio() {
     if (audioUnlocked || !snd) return;
     audioUnlocked = true;
     snd.play().then(() => { snd.pause(); snd.currentTime = 0; }).catch(() => {});
   }
+  // Unlock on very first interaction
   document.addEventListener('touchstart', unlockAudio, { once: true, passive: true });
   document.addEventListener('mousedown',  unlockAudio, { once: true });
 
   function playSound() {
     if (!snd || muted) return;
-    try {
-      snd.currentTime = 0;
-      const p = snd.play();
-      if (p && p.catch) p.catch(() => {});
-    } catch (_) {}
+    try { snd.currentTime = 0; snd.play().catch(() => {}); } catch (_) {}
   }
 
-  /* ── FLIP ANIMATION ──────────────────────────────────────────────────
+  /* ── FLIP ──────────────────────────────────────────────────────────
    *
-   * FORWARD (next): right half of book folds back → reveals next spread
-   *   - flipper positioned on the RIGHT half
-   *   - front face = current right page (what's showing)
-   *   - back  face = next left page (what will be revealed)
-   *   - book's right static page switches to next right page instantly
-   *   - animates: rotateY(0) → rotateY(-180deg)
+   * Single-page flip:
    *
-   * BACKWARD (prev): left half of book folds back → reveals prev spread
-   *   - flipper positioned on the LEFT half
-   *   - front face (seen from back) = current left page
-   *   - back  face = prev right page
-   *   - book's left static page switches to prev left page instantly
-   *   - animates: rotateY(-180deg) → rotateY(0)
+   * FORWARD (next page):
+   *   - flipper covers full book, front = current page, back = next page
+   *   - origin = LEFT edge  →  rotates -180° (peels from right to left)
+   *   - static page swaps to next immediately (hidden under flipper)
    *
-   * Mobile: same but only one page, flipper = full width
+   * BACKWARD (prev page):
+   *   - flipper covers full book, front = prev page (seen as back face),
+   *     back = current page
+   *   - origin = RIGHT edge → animates -180° → 0° (peels from left to right)
+   *   - static page swaps to prev immediately
+   *
    * ────────────────────────────────────────────────────────────────── */
-
   function flip(direction) {
     if (isAnimating) return;
 
-    const mobile = IS_MOBILE();
-    const step   = mobile ? 1 : 2;
-
-    // Compute next spreadBase
-    let nextBase;
-    if (direction === 'forward') {
-      nextBase = spreadBase + step;
-      if (nextBase > TOTAL) return;
-    } else {
-      nextBase = spreadBase - step;
-      if (nextBase < 1) return;
-    }
+    const nextPage = direction === 'forward' ? page + 1 : page - 1;
+    if (nextPage < 1 || nextPage > TOTAL) return;
 
     isAnimating = true;
     playSound();
 
-    // ── Set up flipper faces ──
-    if (mobile) {
-      // Full width flipper
-      flipper.style.left  = '0';
-      flipper.style.right = '0';
-      flipper.style.width = '100%';
-      if (direction === 'forward') {
-        flipper.style.transformOrigin = 'left center';
-        flipFrontImg.src = src(spreadBase);       // current page
-        flipBackImg.src  = src(nextBase);         // next page
-        // Under the flipper: show next page on left static immediately
-        leftImg.src = src(nextBase);
-        flipper.style.transform = 'rotateY(0deg)';
-      } else {
-        flipper.style.transformOrigin = 'right center';
-        flipFrontImg.src = src(nextBase);         // prev page (shown as back)
-        flipBackImg.src  = src(spreadBase);       // current page (front = back face)
-        leftImg.src = src(nextBase);
-        flipper.style.transform = 'rotateY(-180deg)';
-      }
+    // Position flipper over the full book
+    flipper.style.left = '0';
+    flipper.style.top  = '0';
+
+    if (direction === 'forward') {
+      // Front shows current page, back shows next
+      flipFrontImg.src = src(page);
+      flipBackImg.src  = src(nextPage);
+      flipper.style.transformOrigin = 'left center';
+      flipper.style.transform = 'rotateY(0deg)';
+      // Swap static page to next now (it sits hidden under the flipper)
+      leftImg.src = src(nextPage);
     } else {
-      // Desktop double spread
-      if (direction === 'forward') {
-        // Flipper on right half
-        flipper.style.left  = '50%';
-        flipper.style.right = '0';
-        flipper.style.width = '50%';
-        flipper.style.transformOrigin = 'left center';
-        flipFrontImg.src = src(spreadBase + 1);   // current right page
-        flipBackImg.src  = src(nextBase);         // next left page
-        // Swap right static to next right page (hidden under flipper initially, reveals at end)
-        rightImg.src = src(nextBase + 1);
-        flipper.style.transform = 'rotateY(0deg)';
-      } else {
-        // Flipper on left half
-        flipper.style.left  = '0';
-        flipper.style.right = '50%';
-        flipper.style.width = '50%';
-        flipper.style.transformOrigin = 'right center';
-        flipFrontImg.src = src(nextBase + 1);     // prev right page (shown as back)
-        flipBackImg.src  = src(spreadBase);       // current left page
-        leftImg.src = src(nextBase);
-        flipper.style.transform = 'rotateY(-180deg)';
-      }
+      // Back shows current page, front shows prev (will be revealed as back rotates away)
+      flipFrontImg.src = src(nextPage);
+      flipBackImg.src  = src(page);
+      flipper.style.transformOrigin = 'right center';
+      flipper.style.transform = 'rotateY(-180deg)';
+      // Swap static page to prev now
+      leftImg.src = src(nextPage);
     }
 
-    // Force reflow so transform is applied before animation starts
+    // Force reflow — ensures browser paints start state before animation
     void flipper.offsetWidth;
 
-    // ── Trigger CSS animation ──
-    flipper.classList.add(direction === 'forward' ? 'flip-forward' : 'flip-backward');
+    // Trigger animation
+    const cls = direction === 'forward' ? 'flip-forward' : 'flip-backward';
+    flipper.classList.add(cls);
 
-    // ── On animation end ──
-    flipper.addEventListener('animationend', function done() {
-      flipper.removeEventListener('animationend', done);
-      flipper.classList.remove('flip-forward', 'flip-backward');
+    flipper.addEventListener('animationend', () => {
+      flipper.classList.remove(cls);
+      // Park flipper off-screen
+      flipper.style.left = '-300%';
 
-      // Commit new state
-      spreadBase = nextBase;
-      renderStatic(spreadBase);
-
-      // Hide flipper (push off screen)
-      flipper.style.transform = 'rotateY(90deg)'; // invisible, won't show
-      // Actually just move it out of sight
-      flipper.style.left = '-200%';
-
+      page = nextPage;
+      renderStatic();   // static now correct (already set above, this just confirms)
       updateUI();
       isAnimating = false;
 
-      // Preload upcoming pages
-      preloadAhead();
+      // Preload neighbours
+      for (let i = 1; i <= PRELOAD_AHEAD; i++) {
+        preload(page + i);
+        preload(page - i);
+      }
     }, { once: true });
   }
 
-  function preloadAhead() {
-    const mobile = IS_MOBILE();
-    const step = mobile ? 1 : 2;
-    for (let i = 1; i <= PRELOAD_AHEAD; i++) {
-      preload(spreadBase + i * step);
-      preload(spreadBase - i * step);
-    }
-  }
-
-  /* ── INITIAL RENDER ── */
-  function init() {
-    totPageEl.textContent = TOTAL;
-    sizeBook();
-    renderStatic(spreadBase);
-    updateUI();
-    preloadAhead();
-
-    // Hide flipper initially
-    flipper.style.left = '-200%';
-
-    // Mute toggle
+  /* ── MUTE BUTTON ── */
+  function initMute() {
     const btnMute   = document.getElementById('btn-mute');
     const iconSound = document.getElementById('icon-sound');
     const iconMuted = document.getElementById('icon-muted');
@@ -286,12 +173,29 @@
       muted = !muted;
       btnMute.classList.toggle('muted', muted);
       btnMute.title     = muted ? 'Unmute sound' : 'Mute sound';
-      btnMute.ariaLabel = muted ? 'Unmute sound' : 'Mute sound';
+      btnMute.ariaLabel = btnMute.title;
       iconSound.style.display = muted ? 'none'  : 'block';
       iconMuted.style.display = muted ? 'block' : 'none';
     });
+  }
 
-    // Buttons
+  /* ── INIT ── */
+  function init() {
+    totPageEl.textContent = TOTAL;
+
+    sizeBook();
+    renderStatic();
+    updateUI();
+
+    // Park flipper off-screen initially
+    flipper.style.left = '-300%';
+
+    // Preload first few pages
+    for (let i = 1; i <= PRELOAD_AHEAD; i++) preload(i);
+
+    initMute();
+
+    // Nav buttons
     btnNext.addEventListener('click', () => flip('forward'));
     btnPrev.addEventListener('click', () => flip('backward'));
     arrNext.addEventListener('click', () => flip('forward'));
@@ -299,31 +203,29 @@
 
     // Keyboard
     document.addEventListener('keydown', e => {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); flip('forward'); }
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); flip('forward');  }
       if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp'  ) { e.preventDefault(); flip('backward'); }
     });
 
-    // Touch / swipe
-    let tx0 = 0, ty0 = 0, t0 = 0;
+    // Swipe
+    let tx = 0, ty = 0, tt = 0;
     document.addEventListener('touchstart', e => {
-      tx0 = e.touches[0].clientX;
-      ty0 = e.touches[0].clientY;
-      t0  = Date.now();
+      tx = e.touches[0].clientX;
+      ty = e.touches[0].clientY;
+      tt = Date.now();
     }, { passive: true });
     document.addEventListener('touchend', e => {
-      const dx = e.changedTouches[0].clientX - tx0;
-      const dy = e.changedTouches[0].clientY - ty0;
-      const dt = Date.now() - t0;
-      if (dt > 500 || Math.abs(dx) < 35) return;
-      if (Math.abs(dy) > Math.abs(dx) * 1.2) return;
-      if (dx < 0) flip('forward');
-      else        flip('backward');
+      const dx = e.changedTouches[0].clientX - tx;
+      const dy = e.changedTouches[0].clientY - ty;
+      if (Date.now() - tt > 500) return;
+      if (Math.abs(dx) < 35) return;
+      if (Math.abs(dy) > Math.abs(dx) * 1.3) return; // too vertical
+      flip(dx < 0 ? 'forward' : 'backward');
     }, { passive: true });
 
-    // Resize
+    // Resize: re-fit book
     window.addEventListener('resize', () => {
       sizeBook();
-      renderStatic(spreadBase);
       updateUI();
     });
   }
